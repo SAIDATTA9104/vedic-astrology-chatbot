@@ -1,5 +1,8 @@
 # Vedic Astrology AI Chatbot
 
-Integrated with Parashara's Light and Gemini Pro.
+## Quick Start
+1. pip install -r requirements.txt
+2. Add GEMINI_API_KEY to .env
+3. streamlit run app.py
 
-See app.py for main code.
+Upload PDFs from Parashara's Light 9 for accurate Gemini responses.
