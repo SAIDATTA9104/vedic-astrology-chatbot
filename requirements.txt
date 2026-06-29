@@ -1,4 +1,10 @@
 streamlit
-google-genai
 python-dotenv
-Pillow
+langchain
+langchain-community
+langchain-groq
+langchain-huggingface
+faiss-cpu
+pypdf
+sentence-transformers
+torchvision

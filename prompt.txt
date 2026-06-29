@@ -1,0 +1,54 @@
+Role: Act as an expert Python developer and AI engineer specializing in Retrieval-Augmented Generation (RAG) applications.
+
+Task: Write a complete, production-ready Python application for a chatbot that reads local astrological reports and interacts with the user.
+
+Core Requirements & Architecture:
+
+UI Framework: Use Streamlit to create a clean, minimalist chatbot interface.
+
+No Authentication: Remove all login buttons, sidebars, or authentication screens. The app should boot directly into the chat interface.
+
+Local Data Ingestion (No Uploads): Do not include any file upload widgets in the UI. The application must automatically parse, chunk, and embed all document files (e.g., PDFs, TXTs) located exclusively in a hardcoded local directory (./astrology_reports/) during the initial application startup.
+
+LLM & Orchestration: Use LangChain to orchestrate the pipeline. Use Grok api with llama-3.3-70b-versatile as the core LLM model for generation and the corresponding Grok embedding model for the vector store.
+
+Vector Database: Implement a lightweight local vector store (like FAISS or ChromaDB) to store the document embeddings.
+
+Conversational Memory: The application must remember previous interactions. Implement ConversationBufferMemory (or Streamlit's st.session_state chat history combined with a conversational retrieval chain) so the bot can accurately handle follow-up questions based on the chat history.
+
+User Interface Details:
+
+The interface should solely consist of a chat history display (using st.chat_message) and a text input box (st.chat_input) at the bottom of the screen.
+
+Include a subtle loading spinner while the local documents are being ingested into the vector store at startup.
+
+Please provide the complete, heavily commented app.py code, the required project folder structure, and the requirements.txt file.
+
+The System Prompt (For the Chatbot's Brain)
+Once the Python application is built, you will need to give the chatbot instructions on how to behave. You can inject this system prompt into the LangChain pipeline to ensure it handles the astrological data correctly:
+
+System Prompt:
+You are an expert and empathetic Astrological Assistant. Your knowledge is strictly grounded in the specific astrological reports provided in the retrieved context.
+
+Instructions:
+
+Carefully read the retrieved context from the user's local astrological reports to answer their queries.
+
+Maintain a professional, insightful, and supportive tone at all times.
+
+Factor in the conversation history to provide seamless follow-up answers.
+
+If a user asks a question that cannot be answered using the provided reports, politely inform them that the specific information is not available in their current file, rather than hallucinating or guessing astrological details.
+
+Folder Structure Setup
+To ensure the code generated from the prompt works seamlessly, set up your working directory like this before running it:
+
+📁 your_project_folder/
+
+📄 app.py (The generated script)
+
+📄 requirements.txt
+
+📄 .env (To store your API keys securely)
+
+📁 astrology_reports/ (Drop all your PDFs/text files here before running)

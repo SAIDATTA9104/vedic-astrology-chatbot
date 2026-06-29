@@ -1,70 +1,166 @@
 import streamlit as st
 import os
 from dotenv import load_dotenv
-from google import genai
-import hashlib
 
+# LangChain Imports
+from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_groq import ChatGroq
+from langchain_classic.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
+
+# Load environment variables (GROQ_API_KEY should be present in .env)
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
+st.set_page_config(page_title="Astrological Assistant", page_icon="✨")
 
-st.title('🔮 Vedic Astrology AI Chatbot - Powered by Parashara & Gemini')
+# Minimalist title
+st.title("✨ Astrological Assistant")
 
-# Simple auth for demo
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
+# The specific system prompt provided in instructions
+SYSTEM_PROMPT = """You are an expert and empathetic Astrological Assistant. Your knowledge is strictly grounded in the specific astrological reports provided in the retrieved context.
 
-username = st.sidebar.text_input('Username', 'demo')
-if st.sidebar.button('Login'):
-    st.session_state.logged_in = True
-    st.success('Logged in as ' + username)
+Instructions:
 
-if st.session_state.logged_in:
-    st.sidebar.success('Welcome!')
+Carefully read the retrieved context from the user's local astrological reports to answer their queries.
 
-    uploaded = st.file_uploader('Upload Parashara Report (PDF)', type=['pdf', 'png', 'jpg', 'jpeg'])
-    chart_name = st.text_input('Chart Name', 'ClientChart1')
+Maintain a professional, insightful, and supportive tone at all times.
 
-    if uploaded and st.button('Process & Save Chart'):
-        os.makedirs('charts', exist_ok=True)
-        file_path = f'charts/{username}_{chart_name}.pdf'
-        with open(file_path, 'wb') as f:
-            f.write(uploaded.getbuffer())
-        st.session_state.current_chart = file_path
-        st.success('Chart saved!')
+Factor in the conversation history to provide seamless follow-up answers.
 
-    if 'current_chart' in st.session_state and st.session_state.current_chart:
-        if 'messages' not in st.session_state:
-            st.session_state.messages = [{'role': 'assistant', 'content': 'Upload complete. Ask me anything about the chart!'}]
+If a user asks a question that cannot be answered using the provided reports, politely inform them that the specific information is not available in their current file, rather than hallucinating or guessing astrological details.
 
-        for msg in st.session_state.messages:
-            st.chat_message(msg['role']).write(msg['content'])
+Context:
+{context}"""
 
-        prompt = st.chat_input('Ask about dasha, career, remedies...')
-        if prompt:
-            st.session_state.messages.append({'role': 'user', 'content': prompt})
-            st.chat_message('user').write(prompt)
+@st.cache_resource(show_spinner=False)
+def load_and_initialize_rag():
+    """
+    Ingest local PDF and TXT files from the astrology_reports directory,
+    embed them, and return a conversational RAG chain.
+    """
+    reports_dir = "./astrology_reports/"
+    
+    # Ensure directory exists
+    if not os.path.exists(reports_dir):
+        os.makedirs(reports_dir, exist_ok=True)
+        return None
 
-            with st.chat_message('assistant'):
-                with st.spinner('Analyzing with Gemini...'):
-                    try:
-                        file_obj = client.files.upload(file=st.session_state.current_chart)
-                        response = client.models.generate_content(
-                            model='gemini-1.5-pro',
-                            contents=[
-                                f'''You are a professional Vedic astrologer. Base **every** answer strictly on the uploaded Parashara Light report. 
-Cite planets, houses, dashas, yogas specifically. No hallucinations or generic advice.
+    # We use a subtle loading spinner during startup ingestion
+    with st.spinner("Initializing local knowledge base..."):
+        # Load PDFs using PyPDFLoader via DirectoryLoader
+        pdf_loader = DirectoryLoader(
+            reports_dir, 
+            glob="**/*.pdf", 
+            loader_cls=PyPDFLoader,
+            use_multithreading=True
+        )
+        docs = pdf_loader.load()
+        
+        # Load text files
+        txt_loader = DirectoryLoader(reports_dir, glob="**/*.txt")
+        docs.extend(txt_loader.load())
 
-Question: {prompt}''',
-                                file_obj
-                            ]
-                        )
-                        answer = response.text
-                        st.write(answer)
-                        st.session_state.messages.append({'role': 'assistant', 'content': answer})
-                    except Exception as e:
-                        st.error(f'Gemini Error: {str(e)}')
-    else:
-        st.info('Please upload a Parashara report to begin.')
+        if not docs:
+            # If the directory is completely empty, we return None to inform the user
+            return None
+
+        # Chunk the documents to fit into the LLM context window
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        splits = text_splitter.split_documents(docs)
+
+        # NOTE: Groq currently does not provide a native embedding API.
+        # We are using a robust, lightweight local embedding model instead 
+        # (sentence-transformers/all-MiniLM-L6-v2) which is standard for local RAG.
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+        # Create FAISS vector store
+        vectorstore = FAISS.from_documents(splits, embeddings)
+        
+        # Initialize the core LLM generation model via Groq API
+        llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+
+        # Set up retrieval chain with history awareness to handle follow-up questions properly
+        contextualize_q_system_prompt = (
+            "Given a chat history and the latest user question "
+            "which might reference context in the chat history, "
+            "formulate a standalone question which can be understood "
+            "without the chat history. Do NOT answer the question, "
+            "just reformulate it if needed and otherwise return it as is."
+        )
+        contextualize_q_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", contextualize_q_system_prompt),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
+        
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+        history_aware_retriever = create_history_aware_retriever(
+            llm, retriever, contextualize_q_prompt
+        )
+
+        qa_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", SYSTEM_PROMPT),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
+        question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+        rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+
+        return rag_chain
+
+# Initialize the pipeline and vector database on startup
+rag_chain = load_and_initialize_rag()
+
+if rag_chain is None:
+    st.info("No reports found. Please drop your PDF or TXT files into the `./astrology_reports/` directory and restart the application.")
 else:
-    st.warning('Login to access the chatbot.')
+    # Initialize session state for UI chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Initialize session state for Langchain conversation memory
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    # Render previous chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Chat input box at the bottom of the screen
+    if prompt := st.chat_input("Ask a question about your astrological report..."):
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        # Process and display assistant response
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing reports..."):
+                try:
+                    response = rag_chain.invoke({
+                        "input": prompt,
+                        "chat_history": st.session_state.chat_history
+                    })
+                    
+                    answer = response["answer"]
+                    st.markdown(answer)
+                    
+                    # Store messages in session memory
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                    # Update LangChain memory format
+                    st.session_state.chat_history.extend([
+                        HumanMessage(content=prompt),
+                        AIMessage(content=answer)
+                    ])
+                except Exception as e:
+                    st.error(f"Error querying the model: {str(e)}")
