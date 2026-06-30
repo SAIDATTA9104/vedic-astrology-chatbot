@@ -5,9 +5,8 @@ from dotenv import load_dotenv
 # LangChain Imports
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings, ChatHuggingFace, HuggingFaceEndpoint
 from langchain_community.vectorstores import FAISS
-from langchain_groq import ChatGroq
 from langchain_classic.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -22,20 +21,30 @@ st.set_page_config(page_title="Astrological Assistant", page_icon="✨")
 st.title("✨ Astrological Assistant")
 
 # The specific system prompt provided in instructions
-SYSTEM_PROMPT = """You are an expert and empathetic Astrological Assistant. Your knowledge is strictly grounded in the specific astrological reports provided in the retrieved context.
+SYSTEM_PROMPT = """You are an expert, analytical Vedic Astrologer (Jyotishi) acting as a data-driven interpreter.
+Your objective is to answer the user's question by meticulously analyzing the provided Parashara's Light (PL9) astrological report data.
 
-Instructions:
+### 1. STRICT GROUNDING RULES
+- You must rely EXCLUSIVELY on the data provided in the `<context>` block. 
+- Do NOT hallucinate planetary placements, Dasha periods, or Yogas. If the context does not explicitly contain the data required to answer the question, state: "The provided chart segment does not contain the required data for this specific query."
+- Treat the PL9 numerical data (Shadbala, Ashtakavarga scores, degrees, exact dates) as immutable facts.
 
-Carefully read the retrieved context from the user's local astrological reports to answer their queries.
+### 2. ANALYTICAL FRAMEWORK
+When synthesizing an answer, use the following logical progression to ensure astrological accuracy:
+1. Base Placement: Identify the relevant planet(s) related to the query, its house, and its sign.
+2. Strengths & Dignity: Evaluate its condition using any provided Shadbala scores, dignity (exalted/debilitated), or Varga chart placements (like Navamsha/D9).
+3. Influences: Factor in aspects (Drishti) and conjunctions from natural benefics (Jupiter, Venus) or malefics (Saturn, Mars, Rahu, Ketu).
+4. Timing: Cross-reference the analysis with the currently active Vimshottari Dasha (Mahadasha, Antardasha) timelines provided in the text.
 
-Maintain a professional, insightful, and supportive tone at all times.
+### 3. TONE AND OUTPUT FORMAT
+- Tone: Be objective, precise, and practical. Avoid fatalistic, doom-mongering, or overly mystical language.
+- Phrasing: Frame predictions as "strong indications," "karmic tendencies," or "periods of specific focus." 
+- Structure: Break down your analysis logically. Use bullet points for readability. Always bold specific dates, planetary names, and Dasha periods.
+- Do not prescribe generalized remedies or gemstones unless they are explicitly recommended within the context document.
 
-Factor in the conversation history to provide seamless follow-up answers.
-
-If a user asks a question that cannot be answered using the provided reports, politely inform them that the specific information is not available in their current file, rather than hallucinating or guessing astrological details.
-
-Context:
-{context}"""
+<context>
+{context}
+</context>"""
 
 @st.cache_resource(show_spinner=False)
 def load_and_initialize_rag():
@@ -76,13 +85,22 @@ def load_and_initialize_rag():
         # NOTE: Groq currently does not provide a native embedding API.
         # We are using a robust, lightweight local embedding model instead 
         # (sentence-transformers/all-MiniLM-L6-v2) which is standard for local RAG.
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-mpnet-base-v2",
+    model_kwargs={'device': 'cpu'}, # Change to 'cuda' or 'mps' if you have a GPU
+    encode_kwargs={'normalize_embeddings': True}
+            )
 
         # Create FAISS vector store
         vectorstore = FAISS.from_documents(splits, embeddings)
         
-        # Initialize the core LLM generation model via Groq API
-        llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+        # Initialize the core LLM generation model via Hugging Face API
+        llm_endpoint = HuggingFaceEndpoint(
+            repo_id="deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+            temperature=0.6,
+            max_new_tokens=2048
+        )
+        llm = ChatHuggingFace(llm=llm_endpoint)
 
         # Set up retrieval chain with history awareness to handle follow-up questions properly
         contextualize_q_system_prompt = (
